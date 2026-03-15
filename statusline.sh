@@ -16,6 +16,9 @@ SEPARATOR="${C_DARK_GRAY}|${C_RESET}"
 # Read JSON input from stdin
 input=$(cat)
 
+# Dump raw input for debugging
+echo "$input" > /tmp/statusline-input.json
+
 # Extract current directory
 current_dir=$(echo "$input" | jq -r '.workspace.current_dir')
 
@@ -42,8 +45,7 @@ dir_name=$(basename "$short_dir")
 dir_part=$(printf " ${C_DARK_GRAY}${dir_parent}/${C_BLUE}${dir_name}${C_RESET}")
 
 
-# Context window usage and available before autocompaction
-# Autocompact buffer is 16.5% of context window (33k for 200k model)
+# Context window usage
 context_part=""
 usage=$(echo "$input" | jq '.context_window.current_usage')
 size=$(echo "$input" | jq '.context_window.context_window_size')
@@ -55,22 +57,14 @@ else
     current=0
 fi
 
-# Autocompact triggers at 83.5% (100% - 16.5% buffer)
-autocompact_threshold=$((size * 835 / 1000))
-autocompact_fmt="$((autocompact_threshold / 1000))k"
-# Percentage of usable context (before autocompact)
-pct=$((current * 100 / autocompact_threshold))
-# Remaining before autocompaction
-remaining=$((autocompact_threshold - current))
-if [ $remaining -lt 0 ]; then
-    remaining=0
-    pct=100
-fi
-# Format remaining tokens (e.g., 110k)
-if [ $remaining -ge 1000 ]; then
-    remaining_fmt="$((remaining / 1000))k"
+# Percentage from Claude Code (of full context window)
+pct=$(echo "$input" | jq '.context_window.used_percentage')
+
+# Format total size (1M for 1000k, otherwise Nk)
+if [ $((size / 1000)) -ge 1000 ]; then
+    size_fmt="$((size / 1000000))M"
 else
-    remaining_fmt="$remaining"
+    size_fmt="$((size / 1000))k"
 fi
 # Format current tokens
 if [ $current -ge 1000 ]; then
@@ -89,7 +83,7 @@ fi
 
 # Model
 MODEL=$(echo "$input" | jq -r '.model.display_name')
-model_part="$(echo "$MODEL" | tr '[:upper:]' '[:lower:]')"
+model_part="$(echo "$MODEL" | sed 's/ *(.*//' | tr '[:upper:]' '[:lower:]')"
 
 # Progress bar (10 chars wide)
 bar_width=10
@@ -103,9 +97,15 @@ empty=$((bar_width - filled))
 bar_filled=$(printf '%*s' "$filled" '' | tr ' ' '▓')
 bar_empty=$(printf '%*s' "$empty" '' | tr ' ' '░')
 progress_bar="${pct_color}${bar_filled}${pct_color}${bar_empty}${C_RESET}"
-# progress_bar="${pct_color}${bar_filled}${C_GRAY}${bar_empty}${C_RESET}"
 
-context_part=$(printf " ${SEPARATOR} ${C_GRAY}$model_part ${pct_color}${pct}%%${C_GRAY} ${progress_bar}${C_GRAY} ${current_fmt}/${autocompact_fmt}")
+exceeds_200k=$(echo "$input" | jq -r '.exceeds_200k_tokens')
+if [ "$exceeds_200k" = "true" ]; then
+    usage_color="$C_YELLOW"
+else
+    usage_color="$C_GRAY"
+fi
+
+context_part=$(printf " ${SEPARATOR} ${C_GRAY}$model_part ${pct_color}${pct}%%${C_GRAY} ${progress_bar} ${usage_color}${current_fmt}/${size_fmt}")
 
 # Build status line components
 
@@ -130,14 +130,160 @@ if [[ "$token" != sk-ant-oat* ]]; then
     fi
 fi
 
-# Claude API usage limits
-# Get the directory where this script is located (resolve symlinks)
-SCRIPT_DIR="$(cd "$(dirname "$(readlink "${BASH_SOURCE[0]}" || echo "${BASH_SOURCE[0]}")")" && pwd)"
-usage_limits=$("$SCRIPT_DIR/statusline-claude-usage.sh" 2>/dev/null)
-if [ -n "$usage_limits" ]; then
-    usage_part=" ${SEPARATOR} ${usage_limits}"
-else
-    usage_part=""
+# ── Claude API usage limits ──────────────────────────────────────────
+
+CACHE_DIR="$HOME/.cache"
+API_CACHE_FILE="$CACHE_DIR/claude-api-response.json"
+LOCK_FILE="$CACHE_DIR/claude-usage.lock"
+CACHE_TTL=120
+RATE_LIMIT=60
+
+[[ ! -d "$CACHE_DIR" ]] && mkdir -p "$CACHE_DIR"
+
+get_file_age() {
+    local file="$1"
+    local mod_time=$(stat -f '%m' "$file" 2>/dev/null)
+    local now=$(date +%s)
+    echo $((now - mod_time))
+}
+
+parse_iso_to_seconds_left() {
+    local iso_date="$1"
+    local clean_date=$(echo "$iso_date" | sed 's/\.[0-9]*//; s/+00:00//; s/Z$//')
+    local reset_ts=$(date -j -u -f "%Y-%m-%dT%H:%M:%S" "$clean_date" "+%s" 2>/dev/null)
+    if [[ -n "$reset_ts" ]]; then
+        local now=$(date +%s)
+        echo $((reset_ts - now))
+    else
+        echo "0"
+    fi
+}
+
+format_remaining_time() {
+    local seconds="$1"
+    if [[ $seconds -le 0 ]]; then
+        echo ""
+        return
+    fi
+    local hours=$((seconds / 3600))
+    local mins=$(((seconds % 3600) / 60))
+    if [[ $hours -gt 0 ]]; then
+        echo "${hours}h${mins}m"
+    else
+        echo "${mins}m"
+    fi
+}
+
+format_remaining_time_days() {
+    local seconds="$1"
+    if [[ $seconds -le 0 ]]; then
+        echo ""
+        return
+    fi
+    local days=$((seconds / 86400))
+    local hours=$(((seconds % 86400) / 3600))
+    if [[ $days -gt 0 ]]; then
+        echo "${days}d${hours}h"
+    else
+        format_remaining_time "$seconds"
+    fi
+}
+
+fetch_api_data() {
+    if [[ -f "$API_CACHE_FILE" ]]; then
+        local age=$(get_file_age "$API_CACHE_FILE")
+        if [[ $age -lt $CACHE_TTL ]]; then
+            cat "$API_CACHE_FILE"
+            return 0
+        fi
+    fi
+
+    if [[ -f "$LOCK_FILE" ]]; then
+        local lock_age=$(get_file_age "$LOCK_FILE")
+        if [[ $lock_age -lt $RATE_LIMIT ]]; then
+            [[ -f "$API_CACHE_FILE" ]] && cat "$API_CACHE_FILE"
+            return 0
+        fi
+    fi
+    touch "$LOCK_FILE"
+
+    # Reuse token from subscription check above
+    local api_token="$token"
+    [[ -z "$api_token" ]] && { [[ -f "$API_CACHE_FILE" ]] && cat "$API_CACHE_FILE"; return 0; }
+
+    local response=$(curl -s --max-time 5 "https://api.anthropic.com/api/oauth/usage" \
+        -H "Authorization: Bearer $api_token" \
+        -H "anthropic-beta: oauth-2025-04-20" 2>/dev/null)
+
+    if [[ -n "$response" ]]; then
+        echo "$response" | tee "$API_CACHE_FILE"
+    else
+        [[ -f "$API_CACHE_FILE" ]] && cat "$API_CACHE_FILE"
+    fi
+}
+
+format_usage_block() {
+    local label="$1"
+    local pct="$2"
+    local reset_at="$3"
+    local use_days="$4"
+    local int_pct=${pct%.*}
+
+    local color
+    if [[ $int_pct -gt 80 ]]; then
+        color="$C_RED"
+    elif [[ $int_pct -gt 60 ]]; then
+        color="$C_YELLOW"
+    elif [[ $int_pct -gt 40 ]]; then
+        color="$C_GRAY"
+    else
+        color="$C_DARK_GRAY"
+    fi
+
+    local time_str=""
+    if [[ -n "$reset_at" ]]; then
+        local secs_left=$(parse_iso_to_seconds_left "$reset_at")
+        if [[ "$use_days" == "days" ]]; then
+            time_str=$(format_remaining_time_days "$secs_left")
+        else
+            time_str=$(format_remaining_time "$secs_left")
+        fi
+    fi
+
+    if [[ -n "$time_str" ]]; then
+        printf "${color}${label}${int_pct}%% (${time_str})${C_RESET}"
+    else
+        printf "${color}${label}${int_pct}%%${C_RESET}"
+    fi
+}
+
+usage_part=""
+RESPONSE=$(fetch_api_data)
+
+if [[ -n "$RESPONSE" ]]; then
+    session=$(echo "$RESPONSE" | jq -r '.five_hour.utilization // empty' 2>/dev/null)
+    weekly=$(echo "$RESPONSE" | jq -r '.seven_day.utilization // empty' 2>/dev/null)
+
+    if [[ -z "$session" && -z "$weekly" ]]; then
+        # Max subscription - no limits
+        usage_part=" ${SEPARATOR} ${C_GREEN}∞${C_RESET}"
+    else
+        limits_output=""
+        if [[ -n "$session" ]]; then
+            session_reset=$(echo "$RESPONSE" | jq -r '.five_hour.resets_at // empty' 2>/dev/null)
+            limits_output=$(format_usage_block "5h:" "$session" "$session_reset" "")
+        fi
+        if [[ -n "$weekly" ]]; then
+            weekly_reset=$(echo "$RESPONSE" | jq -r '.seven_day.resets_at // empty' 2>/dev/null)
+            weekly_str=$(format_usage_block "7d:" "$weekly" "$weekly_reset" "days")
+            if [[ -n "$limits_output" ]]; then
+                limits_output="${limits_output} ${SEPARATOR} ${weekly_str}"
+            else
+                limits_output="${weekly_str}"
+            fi
+        fi
+        [[ -n "$limits_output" ]] && usage_part=" ${SEPARATOR} ${limits_output}"
+    fi
 fi
 
 # Print complete status line
