@@ -58,7 +58,7 @@ else
 fi
 
 # Percentage from Claude Code (of full context window)
-pct=$(echo "$input" | jq '.context_window.used_percentage')
+pct=$(echo "$input" | jq '.context_window.used_percentage // 0')
 
 # Format total size (1M for 1000k, otherwise Nk)
 if [ $((size / 1000)) -ge 1000 ]; then
