@@ -25,7 +25,7 @@ SEPARATOR="${C_DARK_GRAY}|${C_RESET}"
 
 get_file_age() {
   local file="$1"
-  local mod_time=$(stat -f '%m' "$file" 2>/dev/null)
+  local mod_time=$(stat -c '%Y' "$file" 2>/dev/null || stat -f '%m' "$file" 2>/dev/null)
   local now=$(date +%s)
   echo $((now - mod_time))
 }
@@ -33,7 +33,7 @@ get_file_age() {
 parse_iso_to_seconds_left() {
   local iso_date="$1"
   local clean_date=$(echo "$iso_date" | sed 's/\.[0-9]*//; s/+00:00//; s/Z$//')
-  local reset_ts=$(date -j -u -f "%Y-%m-%dT%H:%M:%S" "$clean_date" "+%s" 2>/dev/null)
+  local reset_ts=$(date -u -d "$clean_date" "+%s" 2>/dev/null || date -j -u -f "%Y-%m-%dT%H:%M:%S" "$clean_date" "+%s" 2>/dev/null)
   if [[ -n "$reset_ts" ]]; then
     local now=$(date +%s)
     echo $((reset_ts - now))
