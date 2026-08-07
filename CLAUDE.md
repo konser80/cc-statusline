@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This repository contains bash scripts for generating custom status lines with colored, formatted output:
 
 - **statusline.sh** - Custom status line formatter for Claude Code CLI (self-contained, no network calls)
-- **debug-claude-api.sh** - Standalone debug tool to test API requests and response (not used by statusline.sh)
+- **debug-claude-api.sh** - Standalone debug tool to test API requests and response. Not used by statusline.sh, and gitignored via `debug-*` — it exists only in a working copy, not in a fresh clone.
 - **deploy.sh** - Deploys a symlink from this repo to `~/.claude/`
 - **test-statusline.sh** - Test script with sample JSON data
 
@@ -23,7 +23,7 @@ Claude Code runs `~/.claude/statusline.sh` (symlink → this repo), so edits in 
 
 ```bash
 ./test-statusline.sh           # Full statusline with all components
-./debug-claude-api.sh          # Debug API request/response (standalone)
+./debug-claude-api.sh          # Debug API request/response (standalone, may be absent)
 ```
 
 ## Key Architecture

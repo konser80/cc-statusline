@@ -19,7 +19,7 @@ input=$(cat)
 # Dump raw input for debugging — off by default: this JSON carries session_id,
 # cwd and transcript_path, so it must not land in a world-readable /tmp file.
 if [[ -n "$STATUSLINE_DEBUG" ]]; then
-    (umask 077; echo "$input" > "$HOME/.cache/statusline-input.json")
+    (umask 077; mkdir -p "$HOME/.cache" && echo "$input" > "$HOME/.cache/statusline-input.json") 2>/dev/null
 fi
 
 # All stdin fields in one jq pass — unit separator (\037) keeps empty fields intact
