@@ -1,15 +1,9 @@
-# Test scripts
-test-*
-
 # Example files
 *-example.*
 *-example-*
 
 # Debug scripts
 debug-*
-
-# Claude Code
-CLAUDE.md
 
 # macOS
 .DS_Store
