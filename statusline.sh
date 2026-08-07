@@ -16,11 +16,29 @@ SEPARATOR="${C_DARK_GRAY}|${C_RESET}"
 # Read JSON input from stdin
 input=$(cat)
 
-# Dump raw input for debugging
-echo "$input" > /tmp/statusline-input.json
+# Dump raw input for debugging — off by default: this JSON carries session_id,
+# cwd and transcript_path, so it must not land in a world-readable /tmp file.
+if [[ -n "$STATUSLINE_DEBUG" ]]; then
+    (umask 077; echo "$input" > "$HOME/.cache/statusline-input.json")
+fi
 
-# Extract current directory
-current_dir=$(echo "$input" | jq -r '.workspace.current_dir')
+# All stdin fields in one jq pass — unit separator (\037) keeps empty fields intact
+IFS=$'\037' read -r current_dir current size pct MODEL exceeds_200k cost \
+    has_limits pct_5h reset_5h pct_7d reset_7d <<< "$(echo "$input" | jq -r '
+    [ (.workspace.current_dir // ""),
+      ((.context_window.current_usage // {})
+        | (.input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0)),
+      (.context_window.context_window_size // 0),
+      (.context_window.used_percentage // 0),
+      (.model.display_name // ""),
+      (.exceeds_200k_tokens // false),
+      (.cost.total_cost_usd // 0),
+      (.rate_limits != null),
+      (.rate_limits.five_hour.used_percentage // ""),
+      (.rate_limits.five_hour.resets_at // ""),
+      (.rate_limits.seven_day.used_percentage // ""),
+      (.rate_limits.seven_day.resets_at // "")
+    ] | map(tostring) | join("\u001f")')"
 
 # Git information
 git_branch=""
@@ -42,23 +60,13 @@ short_dir=$(echo "$current_dir" | awk -F'/' '{n = NF; if (n <= 3) print $0; else
 # Split into parent path (gray) and current dir (blue)
 dir_parent=$(dirname "$short_dir")
 dir_name=$(basename "$short_dir")
-dir_part=$(printf " ${C_DARK_GRAY}${dir_parent}/${C_BLUE}${dir_name}${C_RESET}")
+# Directory name goes in printf's arguments, never in the format string — a '%' in
+# a path would otherwise be read as a conversion specifier
+dir_part=$(printf ' %b%s/%b%s%b' "$C_DARK_GRAY" "$dir_parent" "$C_BLUE" "$dir_name" "$C_RESET")
 
 
 # Context window usage
 context_part=""
-usage=$(echo "$input" | jq '.context_window.current_usage')
-size=$(echo "$input" | jq '.context_window.context_window_size')
-
-if [ "$usage" != "null" ]; then
-    current=$(echo "$usage" | jq '.input_tokens + .cache_creation_input_tokens + .cache_read_input_tokens')
-else
-    # Zero state - no messages yet
-    current=0
-fi
-
-# Percentage from Claude Code (of full context window)
-pct=$(echo "$input" | jq '.context_window.used_percentage // 0')
 
 # Format total size (1M for 1000k, otherwise Nk)
 if [ $((size / 1000)) -ge 1000 ]; then
@@ -81,9 +89,8 @@ else
     pct_color="$C_GREEN"
 fi
 
-# Model
-MODEL=$(echo "$input" | jq -r '.model.display_name')
-model_part="$(echo "$MODEL" | sed 's/ *(.*//' | tr '[:upper:]' '[:lower:]')"
+# Model — strip the parenthesised suffix, then lowercase (bash 3.2 has no ${x,,})
+model_part="$(echo "${MODEL%% (*}" | tr '[:upper:]' '[:lower:]')"
 
 # Progress bar (10 chars wide)
 bar_width=10
@@ -98,7 +105,6 @@ bar_filled=""; for ((i=0; i<filled; i++)); do bar_filled+='▓'; done
 bar_empty="";  for ((i=0; i<empty;  i++)); do bar_empty+='░';  done
 progress_bar="${pct_color}${bar_filled}${pct_color}${bar_empty}${C_RESET}"
 
-exceeds_200k=$(echo "$input" | jq -r '.exceeds_200k_tokens')
 if [ "$exceeds_200k" = "true" ]; then
     usage_color="$C_YELLOW"
 else
@@ -110,11 +116,13 @@ context_part=$(printf " ${SEPARATOR} ${C_GRAY}$model_part ${pct_color}${pct}%%${
 # Build status line components
 
 if [ -n "$git_branch" ]; then
+    # Branch name is data too — same reason as dir_part above
     if [ "$git_status" = "✓" ]; then
-        git_part=$(printf " ${SEPARATOR} ${C_GRAY}git:${git_branch} ${C_GREEN}${git_status}${C_RESET}")
+        status_color="$C_GREEN"
     else
-        git_part=$(printf " ${SEPARATOR} ${C_GRAY}git:${git_branch} ${C_RED}${git_status}${C_RESET}")
+        status_color="$C_RED"
     fi
+    git_part=$(printf ' %b %bgit:%s %b%s%b' "$SEPARATOR" "$C_GRAY" "$git_branch" "$status_color" "$git_status" "$C_RESET")
 else
     git_part=""
 fi
@@ -123,41 +131,13 @@ fi
 cost_part=""
 token=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
 if [[ "$token" != sk-ant-oat* ]]; then
-    cost=$(echo "$input" | jq -r '.cost.total_cost_usd // 0')
     if [ "$cost" != "0" ] && [ "$cost" != "null" ]; then
         cost_fmt=$(printf "%.4f" "$cost")
         cost_part=$(printf " ${SEPARATOR} ${C_DARK_GRAY}\$${cost_fmt}${C_RESET}")
     fi
 fi
 
-# ── Claude API usage limits ──────────────────────────────────────────
-
-CACHE_DIR="$HOME/.cache"
-API_CACHE_FILE="$CACHE_DIR/claude-api-response.json"
-LOCK_FILE="$CACHE_DIR/claude-usage.lock"
-CACHE_TTL=120
-RATE_LIMIT=60
-
-[[ ! -d "$CACHE_DIR" ]] && mkdir -p "$CACHE_DIR"
-
-get_file_age() {
-    local file="$1"
-    local mod_time=$(stat -c '%Y' "$file" 2>/dev/null || stat -f '%m' "$file" 2>/dev/null)
-    local now=$(date +%s)
-    echo $((now - mod_time))
-}
-
-parse_iso_to_seconds_left() {
-    local iso_date="$1"
-    local clean_date=$(echo "$iso_date" | sed 's/\.[0-9]*//; s/+00:00//; s/Z$//')
-    local reset_ts=$(date -u -d "$clean_date" "+%s" 2>/dev/null || date -j -u -f "%Y-%m-%dT%H:%M:%S" "$clean_date" "+%s" 2>/dev/null)
-    if [[ -n "$reset_ts" ]]; then
-        local now=$(date +%s)
-        echo $((reset_ts - now))
-    else
-        echo "0"
-    fi
-}
+# ── Claude usage limits (from stdin) ─────────────────────────────────
 
 format_remaining_time() {
     local seconds="$1"
@@ -189,39 +169,6 @@ format_remaining_time_days() {
     fi
 }
 
-fetch_api_data() {
-    if [[ -f "$API_CACHE_FILE" ]]; then
-        local age=$(get_file_age "$API_CACHE_FILE")
-        if [[ $age -lt $CACHE_TTL ]]; then
-            cat "$API_CACHE_FILE"
-            return 0
-        fi
-    fi
-
-    if [[ -f "$LOCK_FILE" ]]; then
-        local lock_age=$(get_file_age "$LOCK_FILE")
-        if [[ $lock_age -lt $RATE_LIMIT ]]; then
-            [[ -f "$API_CACHE_FILE" ]] && cat "$API_CACHE_FILE"
-            return 0
-        fi
-    fi
-    touch "$LOCK_FILE"
-
-    # Reuse token from subscription check above
-    local api_token="$token"
-    [[ -z "$api_token" ]] && { [[ -f "$API_CACHE_FILE" ]] && cat "$API_CACHE_FILE"; return 0; }
-
-    local response=$(curl -s --max-time 5 "https://api.anthropic.com/api/oauth/usage" \
-        -H "Authorization: Bearer $api_token" \
-        -H "anthropic-beta: oauth-2025-04-20" 2>/dev/null)
-
-    if [[ -n "$response" ]]; then
-        echo "$response" | tee "$API_CACHE_FILE"
-    else
-        [[ -f "$API_CACHE_FILE" ]] && cat "$API_CACHE_FILE"
-    fi
-}
-
 format_usage_block() {
     local label="$1"
     local pct="$2"
@@ -242,7 +189,7 @@ format_usage_block() {
 
     local time_str=""
     if [[ -n "$reset_at" ]]; then
-        local secs_left=$(parse_iso_to_seconds_left "$reset_at")
+        local secs_left=$((reset_at - $(date +%s)))
         if [[ "$use_days" == "days" ]]; then
             time_str=$(format_remaining_time_days "$secs_left")
         else
@@ -258,24 +205,18 @@ format_usage_block() {
 }
 
 usage_part=""
-RESPONSE=$(fetch_api_data)
 
-if [[ -n "$RESPONSE" ]]; then
-    session=$(echo "$RESPONSE" | jq -r '.five_hour.utilization // empty' 2>/dev/null)
-    weekly=$(echo "$RESPONSE" | jq -r '.seven_day.utilization // empty' 2>/dev/null)
-
-    if [[ -z "$session" && -z "$weekly" ]]; then
+if [ "$has_limits" = "true" ]; then
+    if [[ -z "$pct_5h" && -z "$pct_7d" ]]; then
         # Max subscription - no limits
         usage_part=" ${SEPARATOR} ${C_GREEN}∞${C_RESET}"
     else
         limits_output=""
-        if [[ -n "$session" ]]; then
-            session_reset=$(echo "$RESPONSE" | jq -r '.five_hour.resets_at // empty' 2>/dev/null)
-            limits_output=$(format_usage_block "5h:" "$session" "$session_reset" "")
+        if [[ -n "$pct_5h" ]]; then
+            limits_output=$(format_usage_block "5h:" "$pct_5h" "$reset_5h" "")
         fi
-        if [[ -n "$weekly" ]]; then
-            weekly_reset=$(echo "$RESPONSE" | jq -r '.seven_day.resets_at // empty' 2>/dev/null)
-            weekly_str=$(format_usage_block "7d:" "$weekly" "$weekly_reset" "days")
+        if [[ -n "$pct_7d" ]]; then
+            weekly_str=$(format_usage_block "7d:" "$pct_7d" "$reset_7d" "days")
             if [[ -n "$limits_output" ]]; then
                 limits_output="${limits_output} ${SEPARATOR} ${weekly_str}"
             else
