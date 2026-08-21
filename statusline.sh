@@ -89,8 +89,10 @@ else
     pct_color="$C_GREEN"
 fi
 
-# Model — strip the parenthesised suffix, then lowercase (bash 3.2 has no ${x,,})
-model_part="$(echo "${MODEL%% (*}" | tr '[:upper:]' '[:lower:]')"
+# Model — drop any "provider/" prefix, strip the parenthesised suffix, then
+# lowercase (bash 3.2 has no ${x,,})
+model_stripped="${MODEL##*/}"
+model_part="$(echo "${model_stripped%% (*}" | tr '[:upper:]' '[:lower:]')"
 
 # Progress bar (10 chars wide)
 bar_width=10
