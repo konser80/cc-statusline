@@ -43,6 +43,7 @@ IFS=$'\037' read -r current_dir current size pct MODEL exceeds_200k cost \
 # Git information
 git_branch=""
 git_status=""
+git_remote_icon=""
 if git -C "$current_dir" rev-parse --git-dir > /dev/null 2>&1; then
     git_branch=$(git -C "$current_dir" --no-optional-locks branch --show-current 2>/dev/null)
     if [ -n "$git_branch" ]; then
@@ -50,6 +51,22 @@ if git -C "$current_dir" rev-parse --git-dir > /dev/null 2>&1; then
             git_status="✓"
         else
             git_status="✗"
+        fi
+
+        # Remote: ⌀ if none configured, ⇡ if the branch differs from it
+        # (ahead, behind, or never pushed — one icon covers all three)
+        if [ -z "$(git -C "$current_dir" --no-optional-locks remote 2>/dev/null)" ]; then
+            git_remote_icon="${C_GRAY}⌀${C_RESET}"
+        else
+            upstream=$(git -C "$current_dir" --no-optional-locks rev-parse --abbrev-ref '@{u}' 2>/dev/null)
+            if [ -z "$upstream" ]; then
+                git_remote_icon="${C_YELLOW}⇡${C_RESET}"
+            else
+                read -r ahead behind <<< "$(git -C "$current_dir" --no-optional-locks rev-list --left-right --count "HEAD...$upstream" 2>/dev/null)"
+                if [ "${ahead:-0}" != "0" ] || [ "${behind:-0}" != "0" ]; then
+                    git_remote_icon="${C_YELLOW}⇡${C_RESET}"
+                fi
+            fi
         fi
     fi
 fi
@@ -124,7 +141,9 @@ if [ -n "$git_branch" ]; then
     else
         status_color="$C_RED"
     fi
-    git_part=$(printf ' %b %bgit:%s %b%s%b' "$SEPARATOR" "$C_GRAY" "$git_branch" "$status_color" "$git_status" "$C_RESET")
+    remote_suffix=""
+    [ -n "$git_remote_icon" ] && remote_suffix=$(printf ' %b' "$git_remote_icon")
+    git_part=$(printf ' %b %bgit:%s %b%s%b%s' "$SEPARATOR" "$C_GRAY" "$git_branch" "$status_color" "$git_status" "$C_RESET" "$remote_suffix")
 else
     git_part=""
 fi
@@ -179,12 +198,10 @@ format_usage_block() {
     local int_pct=${pct%.*}
 
     local color
-    if [[ $int_pct -gt 80 ]]; then
+    if [[ $int_pct -gt 90 ]]; then
         color="$C_RED"
-    elif [[ $int_pct -gt 60 ]]; then
+    elif [[ $int_pct -gt 70 ]]; then
         color="$C_YELLOW"
-    elif [[ $int_pct -gt 40 ]]; then
-        color="$C_GRAY"
     else
         color="$C_DARK_GRAY"
     fi

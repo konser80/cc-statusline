@@ -45,7 +45,7 @@ Claude Code runs `~/.claude/statusline.sh` (symlink → this repo), so edits in 
 - **Source**: `.rate_limits.{five_hour,seven_day}.{used_percentage,resets_at}` from the stdin JSON — no API call, no cache, no token needed. `resets_at` is a unix timestamp; time left is `resets_at - $(date +%s)`.
 - **Output**: `5h:20% (3h52m) | 7d:36% (4d0h)` with ANSI colors
 - **Color thresholds**: Each block colored by utilization:
-  - ≤40%: dark gray — 40–60%: gray — 60–80%: yellow — >80%: red
+  - ≤70%: dark gray — 70–90%: yellow — >90%: red
 - **Fallbacks**: `.rate_limits` absent → block omitted entirely. Present but both percentages null → `∞` (Max subscription, no limits).
 
 ### debug-claude-api.sh
