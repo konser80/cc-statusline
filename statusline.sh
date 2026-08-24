@@ -142,7 +142,7 @@ if [ -n "$git_branch" ]; then
         status_color="$C_RED"
     fi
     remote_suffix=""
-    [ -n "$git_remote_icon" ] && remote_suffix=$(printf ' %b' "$git_remote_icon")
+    [ -n "$git_remote_icon" ] && remote_suffix=$(printf '%b' "$git_remote_icon")
     git_part=$(printf ' %b %bgit:%s %b%s%b%s' "$SEPARATOR" "$C_GRAY" "$git_branch" "$status_color" "$git_status" "$C_RESET" "$remote_suffix")
 else
     git_part=""
