@@ -223,6 +223,46 @@ format_usage_block() {
     fi
 }
 
+# ── Fable weekly limit (from the usage API — stdin has no per-model rows) ──
+# The cache holds one line "<percent> <resets_at epoch>", or is empty when the
+# account has no Fable row. Renders read it as is; a stale cache is refreshed in
+# the background so a slow API never delays the status line.
+FABLE_CACHE="$HOME/.cache/statusline-fable"
+FABLE_LOCK="$HOME/.cache/statusline-fable.lock"
+
+refresh_fable_cache() {
+    # Drop a lock left behind by a killed refresh
+    [[ -n "$(find "$FABLE_LOCK" -maxdepth 0 -mmin +1 2>/dev/null)" ]] && rmdir "$FABLE_LOCK" 2>/dev/null
+    mkdir "$FABLE_LOCK" 2>/dev/null || return
+    (
+        trap 'rmdir "$FABLE_LOCK" 2>/dev/null' EXIT
+        umask 077
+        response=$(curl -s --fail --max-time 5 "https://api.anthropic.com/api/oauth/usage" \
+            -H "Authorization: Bearer $token" \
+            -H "anthropic-beta: oauth-2025-04-20") || exit
+        # Cache only a response that has limits[] — an error body must not
+        # overwrite good data. Temp file + mv keeps readers from seeing half a write.
+        line=$(echo "$response" | jq -er '
+            if (.limits | type) != "array" then error("no limits") else
+            [ .limits[] | select(.kind == "weekly_scoped" and .scope.model.display_name == "Fable") ][0]
+            | if . == null then "" else
+                "\(.percent // 0) \(.resets_at // "" | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | (fromdateiso8601? // ""))"
+              end
+            end') || exit
+        echo "$line" > "$FABLE_CACHE.tmp" && mv "$FABLE_CACHE.tmp" "$FABLE_CACHE"
+    ) >/dev/null 2>&1 &
+}
+
+read_fable_limit() {
+    pct_fable=""
+    reset_fable=""
+    mkdir -p "$HOME/.cache" 2>/dev/null
+    if [[ -z "$(find "$FABLE_CACHE" -maxdepth 0 -mmin -2 2>/dev/null)" ]]; then
+        refresh_fable_cache
+    fi
+    [[ -f "$FABLE_CACHE" ]] && read -r pct_fable reset_fable < "$FABLE_CACHE"
+}
+
 usage_part=""
 
 if [ "$has_limits" = "true" ]; then
@@ -240,6 +280,17 @@ if [ "$has_limits" = "true" ]; then
                 limits_output="${limits_output} ${SEPARATOR} ${weekly_str}"
             else
                 limits_output="${weekly_str}"
+            fi
+        fi
+        if [[ "$token" == sk-ant-oat* ]]; then
+            read_fable_limit
+            if [[ -n "$pct_fable" && "$pct_fable" != "0" ]]; then
+                fable_str=$(format_usage_block "fable:" "$pct_fable" "$reset_fable" "days")
+                if [[ -n "$limits_output" ]]; then
+                    limits_output="${limits_output} ${SEPARATOR} ${fable_str}"
+                else
+                    limits_output="${fable_str}"
+                fi
             fi
         fi
         [[ -n "$limits_output" ]] && usage_part=" ${SEPARATOR} ${limits_output}"

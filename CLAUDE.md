@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This repository contains bash scripts for generating custom status lines with colored, formatted output:
 
-- **statusline.sh** - Custom status line formatter for Claude Code CLI (self-contained, no network calls)
+- **statusline.sh** - Custom status line formatter for Claude Code CLI (one cached background API call, for the Fable limit only)
 - **debug-claude-api.sh** - Standalone debug tool to test API requests and response. Not used by statusline.sh, and gitignored via `debug-*` — it exists only in a working copy, not in a fresh clone.
 - **deploy.sh** - Deploys a symlink from this repo to `~/.claude/`
 - **test-statusline.sh** - Test script with sample JSON data
@@ -48,6 +48,12 @@ Claude Code runs `~/.claude/statusline.sh` (symlink → this repo), so edits in 
   - ≤70%: dark gray — 70–90%: yellow — >90%: red
 - **Fallbacks**: `.rate_limits` absent → block omitted entirely. Present but both percentages null → `∞` (Max subscription, no limits).
 
+### Fable limit block (the only network call)
+- **Why the API**: stdin `rate_limits` has only `five_hour`/`seven_day`; the per-model weekly Fable window exists only in the usage API's `limits[]` (`kind: "weekly_scoped"`, `scope.model.display_name: "Fable"`, integer `percent`, ISO `resets_at`).
+- **Output**: third block after `7d:`, same format — `fable:2% (1d15h)`. Shown only for OAuth tokens, only when `percent` > 0.
+- **Cache**: `~/.cache/statusline-fable` holds `"<percent> <resets_at epoch>"`, or an empty line when the account has no Fable row. Older than 2 min → refresh in a background subshell (mkdir lock `statusline-fable.lock`, stale after 1 min); the render always uses whatever is cached, so the first render after a cold start shows no Fable block.
+- **Safety**: `curl --fail --max-time 5`; the cache is only written when the response has a `limits` array (an error body must not poison it), via temp file + `mv`.
+
 ### debug-claude-api.sh
 - **Purpose**: Debug tool to test API connection and view raw responses
 - **Output**: Shows keychain access, token extraction, HTTP status, and formatted JSON
@@ -63,7 +69,7 @@ Claude Code runs `~/.claude/statusline.sh` (symlink → this repo), so edits in 
 ## Important Details
 
 **Script conventions:**
-- statusline.sh is self-contained — everything it prints comes from the stdin JSON, except the keychain lookup used to tell subscription from API tokens.
+- Everything statusline.sh prints comes from the stdin JSON, except the keychain lookup used to tell subscription from API tokens and the Fable limit (usage API, see above). Don't move 5h/7d back to the API — stdin has them.
 - Important: Don't use `printf` with captured output containing `%` symbols - use direct string concatenation
 
 **Context window display in statusline.sh:**
