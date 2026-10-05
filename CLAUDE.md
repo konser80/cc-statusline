@@ -35,11 +35,11 @@ Claude Code runs `~/.claude/statusline.sh` (symlink → this repo), so edits in 
   - Git branch and clean/dirty status
   - Context window usage with progress bar (raw `.context_window.used_percentage`)
   - Model name
-  - Session cost (hidden for subscription/OAuth users, shown for API token users)
+  - Session cost — three cases: OpenRouter models (non-`claude-*` id) show what OpenRouter actually billed for the session's responses; Anthropic API tokens show Claude Code's `cost.total_cost_usd`; subscription/OAuth users get no cost
   - Usage limits, read from stdin (`5h:20% (3h52m) | 7d:36% (4d0h)`)
 - **Color scheme**: ANSI 256-colour indices, Tokyo Night Storm-ish. In use: 240 dark gray (separators, parent path, low usage), 8 gray (labels), 4 blue (current dir), 2 green (clean git, low context), 220 yellow (warning), 203 red (dirty git, high usage). `C_DARK_CYAN` (30), `C_CYAN` (81) and `C_LIGHT_GREEN` (78) are defined but currently unused.
-- **Subscription detection**: Checks OAuth token prefix (`sk-ant-oat*`) to determine subscription vs API tokens
-- **Dependencies**: jq, git, `security` (keychain, for subscription detection only)
+- **Subscription detection**: Checks OAuth token prefix (`sk-ant-oat*`) to determine subscription vs API tokens. Non-Anthropic models (OpenRouter, `model.id` not `claude-*`) are detected separately and marked with a `⤳` icon before the model name.
+- **Dependencies**: jq, git, `security` (keychain, for subscription detection only), `awk`, `curl` and `OPENROUTER_CC_KEY` (OpenRouter session cost)
 
 ### Usage limits block
 - **Source**: `.rate_limits.{five_hour,seven_day}.{used_percentage,resets_at}` from the stdin JSON — no API call, no cache, no token needed. `resets_at` is a unix timestamp; time left is `resets_at - $(date +%s)`.
@@ -48,11 +48,18 @@ Claude Code runs `~/.claude/statusline.sh` (symlink → this repo), so edits in 
   - ≤70%: dark gray — 70–90%: yellow — >90%: red
 - **Fallbacks**: `.rate_limits` absent → block omitted entirely. Present but both percentages null → `∞` (Max subscription, no limits).
 
-### Fable limit block (the only network call)
+### Fable limit block (network call)
 - **Why the API**: stdin `rate_limits` has only `five_hour`/`seven_day`; the per-model weekly Fable window exists only in the usage API's `limits[]` (`kind: "weekly_scoped"`, `scope.model.display_name: "Fable"`, integer `percent`, ISO `resets_at`).
 - **Output**: third block after `7d:`, same format — `fable:2% (1d15h)`. Shown only for OAuth tokens, only when `percent` > 0.
 - **Cache**: `~/.cache/statusline-fable` holds `"<percent> <resets_at epoch>"`, or an empty line when the account has no Fable row. Older than 2 min → refresh in a background subshell (mkdir lock `statusline-fable.lock`, stale after 1 min); the render always uses whatever is cached, so the first render after a cold start shows no Fable block.
 - **Safety**: `curl --fail --max-time 5`; the cache is only written when the response has a `limits` array (an error body must not poison it), via temp file + `mv`.
+
+### OpenRouter cost block (network call, only for non-Anthropic models)
+- **Why the API**: neither local figure matches the bill. Claude Code's `cost.total_cost_usd` is priced against its own Anthropic rate card, and tokens × the public `/api/v1/models` prices is off too — for one `z-ai/glm-5.2` session Claude Code said $11.11, catalog prices gave $0.76, OpenRouter billed $4.88. Don't go back to either. For models whose `id` does not start with `claude-`, the cost is the sum of `total_cost` from `GET https://openrouter.ai/api/v1/generation?id=<gen-…>` over every response id found in `transcript_path` and in `<transcript minus .jsonl>/subagents/*.jsonl`.
+- **Key**: `OPENROUTER_CC_KEY`; falls back to `ANTHROPIC_AUTH_TOKEN` only when `ANTHROPIC_BASE_URL` points at openrouter.ai. No key → no cost shown. The key reaches curl through a config on stdin (`-K -`), never argv.
+- **Output**: `$4.8779`, same slot/format as the Anthropic cost. Per session — two concurrent sessions each show their own total. Requests that never reach the transcript (e.g. title generation) are not counted.
+- **Cache**: `~/.cache/statusline-openrouter-cost/<session_id>` holds one `"<gen_id> <cost>"` line per response. A render sums it as is; when a transcript is newer than the cache, a background subshell fetches the missing ids (50 per pass, sequential, one retry after 3 s; lock `<cache>.lock`, stale after 3 min). The cache's mtime is the "up to date" marker: set to the pass's start time when nothing is pending, aged to year 2000 when work is left so the next render continues. So the figure trails the last response by one render, and a resumed long session catches up over a few renders.
+- **Safety**: `curl --fail --max-time 5` per request; only responses with a `total_cost` are recorded, via temp file + `mv`. Ids still unknown an hour after they were issued (OpenRouter can take minutes to expose a generation) (timestamp is inside the id) are recorded as `0` so they aren't retried forever.
 
 ### debug-claude-api.sh
 - **Purpose**: Debug tool to test API connection and view raw responses

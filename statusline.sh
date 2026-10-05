@@ -19,25 +19,30 @@ input=$(cat)
 # Dump raw input for debugging — off by default: this JSON carries session_id,
 # cwd and transcript_path, so it must not land in a world-readable /tmp file.
 if [[ -n "$STATUSLINE_DEBUG" ]]; then
-    (umask 077; mkdir -p "$HOME/.cache" && echo "$input" > "$HOME/.cache/statusline-input.json") 2>/dev/null
+    sid=$(echo "$input" | jq -r '.session_id // "unknown"' 2>/dev/null)
+    (umask 077; mkdir -p "$HOME/.cache" && echo "$input" > "$HOME/.cache/statusline-input-${sid}.json") 2>/dev/null
 fi
 
 # All stdin fields in one jq pass — unit separator (\037) keeps empty fields intact
-IFS=$'\037' read -r current_dir current size pct MODEL exceeds_200k cost \
-    has_limits pct_5h reset_5h pct_7d reset_7d <<< "$(echo "$input" | jq -r '
+IFS=$'\037' read -r current_dir current size pct MODEL MODEL_ID exceeds_200k cost \
+    has_limits pct_5h reset_5h pct_7d reset_7d \
+    session_id transcript_path <<< "$(echo "$input" | jq -r '
     [ (.workspace.current_dir // ""),
       ((.context_window.current_usage // {})
         | (.input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0)),
       (.context_window.context_window_size // 0),
       (.context_window.used_percentage // 0),
       (.model.display_name // ""),
+      (.model.id // ""),
       (.exceeds_200k_tokens // false),
       (.cost.total_cost_usd // 0),
       (.rate_limits != null),
       (.rate_limits.five_hour.used_percentage // ""),
       (.rate_limits.five_hour.resets_at // ""),
       (.rate_limits.seven_day.used_percentage // ""),
-      (.rate_limits.seven_day.resets_at // "")
+      (.rate_limits.seven_day.resets_at // ""),
+      (.session_id // ""),
+      (.transcript_path // "")
     ] | map(tostring) | join("\u001f")')"
 
 # Git information
@@ -107,8 +112,13 @@ else
 fi
 
 # Model — drop any "provider/" prefix, strip the parenthesised suffix, then
-# lowercase (bash 3.2 has no ${x,,})
+# lowercase (bash 3.2 has no ${x,,}). Claude Code normalizes display_name to a
+# bare "Opus 5.5"/"GLM 5.2" with no provider prefix, so the slash heuristic
+# doesn't work; use model.id instead — Anthropic ids start with "claude-",
+# OpenRouter-routed ones (e.g. "z-ai/glm-5.2") don't. Mark those with ⤳.
 model_stripped="${MODEL##*/}"
+model_icon=""
+[[ "$MODEL_ID" != claude-* && -n "$MODEL_ID" ]] && model_icon="⤳ "
 model_part="$(echo "${model_stripped%% (*}" | tr '[:upper:]' '[:lower:]')"
 
 # Progress bar (10 chars wide)
@@ -130,7 +140,7 @@ else
     usage_color="$C_GRAY"
 fi
 
-context_part=$(printf " ${SEPARATOR} ${C_GRAY}$model_part ${pct_color}${pct}%%${C_GRAY} ${progress_bar} ${usage_color}${current_fmt}/${size_fmt}")
+context_part=$(printf " ${SEPARATOR} ${C_GRAY}${model_icon}${model_part} ${pct_color}${pct}%%${C_GRAY} ${progress_bar} ${usage_color}${current_fmt}/${size_fmt}")
 
 # Build status line components
 
@@ -148,10 +158,122 @@ else
     git_part=""
 fi
 
-# Session cost (skip for subscription users — OAuth token starts with sk-ant-oat)
+# ── OpenRouter session cost (generation API — what was actually billed) ──
+# Claude Code's cost.total_cost_usd is priced against its own Anthropic rate
+# card and is wrong for OpenRouter-routed models, and so is tokens × catalog
+# price: for one z-ai/glm-5.2 session Claude Code said $11.11, the
+# /api/v1/models prices gave $0.76, OpenRouter billed $4.88. So we ask
+# OpenRouter per response: the transcript (and its subagents' transcripts) holds
+# every response id ("gen-…"), and /api/v1/generation?id= returns its
+# total_cost. The per-session cache holds one "<gen_id> <cost>" line per
+# response; renders sum it as is while new ids are fetched in the background, so
+# the figure trails the last response by one render (same pattern as the Fable
+# limit below). Requests made outside the transcript (e.g. title generation)
+# are not counted.
+OR_COST_DIR="$HOME/.cache/statusline-openrouter-cost"
+OR_BATCH=50   # ids per background pass
+
+# Never hand an Anthropic credential to OpenRouter: the generic auth token is
+# used only when the session is pointed at OpenRouter.
+or_key="$OPENROUTER_CC_KEY"
+[[ -z "$or_key" && "$ANTHROPIC_BASE_URL" == *openrouter.ai* ]] && or_key="$ANTHROPIC_AUTH_TOKEN"
+
+or_transcripts() {
+    printf '%s\n' "$transcript_path"
+    local f
+    for f in "${transcript_path%.jsonl}"/subagents/*.jsonl; do
+        [[ -f "$f" ]] && printf '%s\n' "$f"
+    done
+}
+
+# stdin: ids, one per line → those with no row in cache file $1
+or_unseen() {
+    awk -v c="$1" 'BEGIN { while ((getline l < c) > 0) { split(l, a, " "); seen[a[1]] } }
+                   NF && !($1 in seen)'
+}
+
+refresh_openrouter_cost() {
+    local cache="$1" lock="$1.lock"
+    # A pass can outlive the usual 1 min (OR_BATCH sequential requests + a retry)
+    [[ -n "$(find "$lock" -maxdepth 0 -mmin +3 2>/dev/null)" ]] && rmdir "$lock" 2>/dev/null
+    mkdir "$lock" 2>/dev/null || return
+    (
+        trap 'rmdir "$lock" 2>/dev/null; rm -f "$cache.tmp" "$cache.stamp"' EXIT
+        umask 077
+        # Anything written to a transcript after this point must trigger another pass
+        : > "$cache.stamp"
+        [[ -f "$cache" ]] || : > "$cache"
+        ids=$(or_transcripts | while IFS= read -r f; do
+                grep -oE '"id":"gen-[A-Za-z0-9_-]+"' "$f" 2>/dev/null
+              done | cut -d'"' -f4 | sort -u)
+        pending=$(echo "$ids" | or_unseen "$cache")
+        more=""
+        [[ $(echo "$pending" | grep -c .) -gt $OR_BATCH ]] && more=1
+        pending=$(echo "$pending" | head -n "$OR_BATCH")
+
+        for attempt in 1 2; do
+            [[ -z "$pending" ]] && break
+            # A generation takes a few seconds to become queryable
+            [[ $attempt -eq 2 ]] && sleep 3
+            # Key and URLs go through a config on stdin, not argv (visible in ps).
+            # No --parallel: it could interleave the bodies on stdout.
+            fetched=$({
+                    printf 'header = "Authorization: Bearer %s"\n' "$or_key"
+                    echo "$pending" | sed 's|.*|url = "https://openrouter.ai/api/v1/generation?id=&"|'
+                } | curl -s --fail --max-time 5 -K - 2>/dev/null \
+                  | jq -r '.data | select(.total_cost != null) | "\(.id) \(.total_cost)"' 2>/dev/null)
+            if [[ -n "$fetched" ]]; then
+                { cat "$cache"; echo "$fetched"; } > "$cache.tmp" && mv "$cache.tmp" "$cache"
+            fi
+            pending=$(echo "$pending" | or_unseen "$cache")
+        done
+
+        # Ids still unknown an hour after they were issued (the timestamp is in the
+        # id) belong to another key or are gone — record them as 0 instead of
+        # asking again on every render.
+        if [[ -n "$pending" ]]; then
+            now=$(date +%s)
+            dead=$(echo "$pending" | awk -F- -v now="$now" '$2 ~ /^[0-9]+$/ && now - $2 > 3600 { print $0, 0 }')
+            if [[ -n "$dead" ]]; then
+                { cat "$cache"; echo "$dead"; } > "$cache.tmp" && mv "$cache.tmp" "$cache"
+                pending=$(echo "$pending" | or_unseen "$cache")
+            fi
+        fi
+
+        if [[ -z "$pending" && -z "$more" ]]; then
+            touch -r "$cache.stamp" "$cache"
+        else
+            # Work left: age the cache so the next render starts another pass
+            touch -t 200001010000 "$cache"
+        fi
+    ) >/dev/null 2>&1 &
+}
+
+read_openrouter_cost() {
+    or_cost=""
+    # session_id names the cache file — take it only in its expected shape
+    [[ -n "$or_key" && -f "$transcript_path" && "$session_id" =~ ^[A-Za-z0-9_-]+$ ]] || return
+    (umask 077; mkdir -p "$OR_COST_DIR") 2>/dev/null
+    local cache="$OR_COST_DIR/$session_id" f stale=""
+    while IFS= read -r f; do
+        [[ "$f" -nt "$cache" ]] && stale=1
+    done < <(or_transcripts)
+    [[ -n "$stale" ]] && refresh_openrouter_cost "$cache"
+    [[ -s "$cache" ]] && or_cost=$(awk '{ s += $2 } END { printf "%.4f", s }' "$cache" 2>/dev/null)
+}
+
+# Session cost — three cases by token/model:
+#  - OpenRouter model (non-claude id): sum of what OpenRouter billed per response
+#  - Anthropic API token (sk-ant-api*): show Claude Code's cost.total_cost_usd
+#  - Subscription (sk-ant-oat*): hide cost
 cost_part=""
 token=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
-if [[ "$token" != sk-ant-oat* ]]; then
+if [[ "$MODEL_ID" != claude-* && -n "$MODEL_ID" ]]; then
+    read_openrouter_cost
+    if [[ -n "$or_cost" ]]; then
+        cost_part=$(printf " ${SEPARATOR} ${C_DARK_GRAY}\$%s${C_RESET}" "$or_cost")
+    fi
+elif [[ "$token" != sk-ant-oat* ]]; then
     if [ "$cost" != "0" ] && [ "$cost" != "null" ]; then
         cost_fmt=$(printf "%.4f" "$cost")
         cost_part=$(printf " ${SEPARATOR} ${C_DARK_GRAY}\$${cost_fmt}${C_RESET}")
