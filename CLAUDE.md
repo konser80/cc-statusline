@@ -34,7 +34,8 @@ Claude Code runs `~/.claude/statusline.sh` (symlink → this repo), so edits in 
   - Shortened directory path (last 3 components)
   - Git branch and clean/dirty status
   - Context window usage with progress bar (raw `.context_window.used_percentage`)
-  - Model name
+  - Prompt cache countdown right after the token count (`40k/200k ❄8m`, a bare red `❄` once expired)
+  - Model name with the effort level glued on (`opus 5.5·m`): `.effort.level` from stdin as one letter — `l`/`m`/`h`/`x` for low/medium/high/xhigh, `max` spelled out; no suffix when the field is absent
   - Session cost — three cases: OpenRouter models (non-`claude-*` id) show what OpenRouter actually billed for the session's responses; Anthropic API tokens show Claude Code's `cost.total_cost_usd`; subscription/OAuth users get no cost
   - Usage limits, read from stdin (`5h:20% (3h52m) | 7d:36% (4d0h)`)
 - **Color scheme**: ANSI 256-colour indices, Tokyo Night Storm-ish. In use: 240 dark gray (separators, parent path, low usage), 8 gray (labels), 4 blue (current dir), 2 green (clean git, low context), 220 yellow (warning), 203 red (dirty git, high usage). `C_DARK_CYAN` (30), `C_CYAN` (81) and `C_LIGHT_GREEN` (78) are defined but currently unused.
@@ -48,9 +49,17 @@ Claude Code runs `~/.claude/statusline.sh` (symlink → this repo), so edits in 
   - ≤70%: dark gray — 70–90%: yellow — >90%: red
 - **Fallbacks**: `.rate_limits` absent → block omitted entirely. Present but both percentages null → `∞` (Max subscription, no limits).
 
+### Prompt cache countdown
+- **Why**: the API keeps the processed context for 5 min or 1 h after the last request (each request restarts the timer); after that the next request re-pays for the whole context, so the countdown says whether a paused session is still cheap to continue.
+- **Source**: the last 200 lines of `transcript_path` — stdin has neither the time of the last request nor the TTL. Time is the `timestamp` of the last main-chain `assistant` entry that touched the cache; TTL comes from the last write in that tail (`usage.cache_creation.ephemeral_5m_input_tokens` > 0 → 5 min, else `ephemeral_1h_input_tokens` → 1 h). No write in the tail → 1 h for OAuth tokens, 5 min otherwise.
+- **Output**: no separator, glued to the context block. `❄8m` (minutes rounded up) when `CACHE_SHOW_SECS` or less is left — dark gray, yellow for the last sixth of the window; a bare red `❄` once expired. Hidden for non-`claude-*` models and below `CACHE_MIN_TOKENS` (30k) of context.
+- **`CACHE_SHOW_SECS` is 600**: with a 1-hour cache the indicator takes no space for the first 50 minutes and is yellow whenever it is shown. A 5-minute cache always fits the threshold, so its countdown is always visible.
+- **It is an estimate**: the API counts from the start of a request, the transcript records when the response landed; subagent requests have their own cache and don't count.
+- **Needs `statusLine.refreshInterval`** (set to 60 in `~/.claude/settings.json`) — without it the status line only re-renders on events and the countdown freezes while idle.
+
 ### Fable limit block (network call)
 - **Why the API**: stdin `rate_limits` has only `five_hour`/`seven_day`; the per-model weekly Fable window exists only in the usage API's `limits[]` (`kind: "weekly_scoped"`, `scope.model.display_name: "Fable"`, integer `percent`, ISO `resets_at`).
-- **Output**: third block after `7d:`, same format — `fable:2% (1d15h)`. Shown only for OAuth tokens, only when `percent` > 0.
+- **Output**: third block after `7d:`, percentage only — `fable:2%`. No time left: the window is weekly like `7d:` beside it (the cache still stores `resets_at`, unused). Shown only for OAuth tokens, only when `percent` > 0.
 - **Cache**: `~/.cache/statusline-fable` holds `"<percent> <resets_at epoch>"`, or an empty line when the account has no Fable row. Older than 2 min → refresh in a background subshell (mkdir lock `statusline-fable.lock`, stale after 1 min); the render always uses whatever is cached, so the first render after a cold start shows no Fable block.
 - **Safety**: `curl --fail --max-time 5`; the cache is only written when the response has a `limits` array (an error body must not poison it), via temp file + `mv`.
 
@@ -76,7 +85,7 @@ Claude Code runs `~/.claude/statusline.sh` (symlink → this repo), so edits in 
 ## Important Details
 
 **Script conventions:**
-- Everything statusline.sh prints comes from the stdin JSON, except the keychain lookup used to tell subscription from API tokens and the Fable limit (usage API, see above). Don't move 5h/7d back to the API — stdin has them.
+- Everything statusline.sh prints comes from the stdin JSON, except the keychain lookup used to tell subscription from API tokens, the Fable limit (usage API, see above), the OpenRouter cost and the prompt cache countdown (transcript tail). Don't move 5h/7d back to the API — stdin has them.
 - Important: Don't use `printf` with captured output containing `%` symbols - use direct string concatenation
 
 **Context window display in statusline.sh:**

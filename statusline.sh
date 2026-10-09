@@ -26,7 +26,7 @@ fi
 # All stdin fields in one jq pass — unit separator (\037) keeps empty fields intact
 IFS=$'\037' read -r current_dir current size pct MODEL MODEL_ID exceeds_200k cost \
     has_limits pct_5h reset_5h pct_7d reset_7d \
-    session_id transcript_path <<< "$(echo "$input" | jq -r '
+    session_id transcript_path effort <<< "$(echo "$input" | jq -r '
     [ (.workspace.current_dir // ""),
       ((.context_window.current_usage // {})
         | (.input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0)),
@@ -42,7 +42,8 @@ IFS=$'\037' read -r current_dir current size pct MODEL MODEL_ID exceeds_200k cos
       (.rate_limits.seven_day.used_percentage // ""),
       (.rate_limits.seven_day.resets_at // ""),
       (.session_id // ""),
-      (.transcript_path // "")
+      (.transcript_path // ""),
+      (.effort.level // "")
     ] | map(tostring) | join("\u001f")')"
 
 # Git information
@@ -120,6 +121,19 @@ model_stripped="${MODEL##*/}"
 model_icon=""
 [[ "$MODEL_ID" != claude-* && -n "$MODEL_ID" ]] && model_icon="⤳ "
 model_part="$(echo "${model_stripped%% (*}" | tr '[:upper:]' '[:lower:]')"
+
+# Effort — one letter glued to the model name ("opus 5.5·m"); max is rare enough
+# to spell out. The field is absent for models without effort. An unknown level
+# is shown as is, but only if it is plain letters: model_part ends up in a
+# printf format string below.
+case "$effort" in
+    low)    effort_fmt="l" ;;
+    medium) effort_fmt="m" ;;
+    high)   effort_fmt="h" ;;
+    xhigh)  effort_fmt="x" ;;
+    *)      effort_fmt="$effort" ;;
+esac
+[[ "$effort_fmt" =~ ^[a-z]+$ ]] && model_part="${model_part}·${effort_fmt}"
 
 # Progress bar (10 chars wide)
 bar_width=10
@@ -280,6 +294,45 @@ elif [[ "$token" != sk-ant-oat* ]]; then
     fi
 fi
 
+# ── Prompt cache countdown (from the transcript) ─────────────────────
+# The API keeps the processed context for 5 min or 1 h after the last request;
+# past that the next request pays for the whole context again. Neither the time
+# of the last request nor the TTL is in stdin, so both come from the tail of the
+# transcript: the timestamp of the last response, and which cache
+# (ephemeral_5m / ephemeral_1h) the last write went to. It is an estimate — the
+# API counts from the start of a request, the transcript records its end.
+CACHE_SHOW_SECS=600     # shown only for the last 10 min; a 5-minute cache always fits
+CACHE_MIN_TOKENS=30000  # below this a cold cache costs next to nothing
+
+cache_part=""
+if [[ "$MODEL_ID" == claude-* && $current -ge $CACHE_MIN_TOKENS && -f "$transcript_path" ]]; then
+    # No write in the tail → assume the TTL Claude Code uses for this token type
+    if [[ "$token" == sk-ant-oat* ]]; then cache_ttl_default=3600; else cache_ttl_default=300; fi
+    read -r cache_ts cache_ttl <<< "$(tail -n 200 "$transcript_path" 2>/dev/null | jq -Rrn --argjson d "$cache_ttl_default" '
+        [ inputs | fromjson?
+          | select(.type == "assistant" and .isSidechain != true and .message.usage != null)
+          | { ts: ((.timestamp // "") | sub("\\.[0-9]+"; "") | (fromdateiso8601? // null)),
+              w5: (.message.usage.cache_creation.ephemeral_5m_input_tokens // 0),
+              w1: (.message.usage.cache_creation.ephemeral_1h_input_tokens // 0),
+              cached: ((.message.usage.cache_read_input_tokens // 0) + (.message.usage.cache_creation_input_tokens // 0)) }
+          | select(.ts != null and .cached > 0) ]
+        | if length == 0 then empty else
+            ([ .[] | select(.w5 + .w1 > 0) ] | last) as $w
+            | "\(last.ts) \(if $w == null then $d elif $w.w5 > 0 then 300 else 3600 end)"
+          end' 2>/dev/null)"
+    if [[ -n "$cache_ts" && -n "$cache_ttl" ]]; then
+        cache_left=$((cache_ts + cache_ttl - $(date +%s)))
+        if [[ $cache_left -le 0 ]]; then
+            cache_part=" ${C_RED}❄${C_RESET}"
+        elif [[ $cache_left -le $CACHE_SHOW_SECS ]]; then
+            # Yellow for the last sixth of the window: 10 min of 1 h (i.e. whenever
+            # it is shown), 50 s of 5 min
+            if [[ $cache_left -le $((cache_ttl / 6)) ]]; then cache_color="$C_YELLOW"; else cache_color="$C_DARK_GRAY"; fi
+            cache_part=" ${cache_color}❄$(((cache_left + 59) / 60))m${C_RESET}"
+        fi
+    fi
+fi
+
 # ── Claude usage limits (from stdin) ─────────────────────────────────
 
 format_remaining_time() {
@@ -407,7 +460,8 @@ if [ "$has_limits" = "true" ]; then
         if [[ "$token" == sk-ant-oat* ]]; then
             read_fable_limit
             if [[ -n "$pct_fable" && "$pct_fable" != "0" ]]; then
-                fable_str=$(format_usage_block "fable:" "$pct_fable" "$reset_fable" "days")
+                # No time left: the window is weekly like 7d: right beside it
+                fable_str=$(format_usage_block "fable:" "$pct_fable" "" "")
                 if [[ -n "$limits_output" ]]; then
                     limits_output="${limits_output} ${SEPARATOR} ${fable_str}"
                 else
@@ -420,4 +474,4 @@ if [ "$has_limits" = "true" ]; then
 fi
 
 # Print complete status line
-echo -e -n "${dir_part}${git_part}${context_part}${cost_part}${usage_part}"
+echo -e -n "${dir_part}${git_part}${context_part}${cache_part}${cost_part}${usage_part}"
