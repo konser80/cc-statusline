@@ -5,8 +5,14 @@ C_DARK_GRAY="\033[38;5;240m"
 C_GRAY="\033[38;5;8m"
 C_BLUE="\033[38;5;4m"
 C_GREEN="\033[38;5;2m"
-C_YELLOW="\033[38;5;220m"
-C_RED="\033[38;5;203m"
+case "$COLORTERM" in
+    truecolor|24bit) C_YELLOW="\033[38;2;196;167;103m" ;;  # #c4a767
+    *) C_YELLOW="\033[38;5;179m" ;;                        # nearest 256-colour
+esac
+case "$COLORTERM" in
+    truecolor|24bit) C_RED="\033[38;2;204;102;102m" ;;  # #cc6666
+    *) C_RED="\033[38;5;167m" ;;                        # nearest 256-colour
+esac
 C_CYAN="\033[38;5;81m"
 C_LIGHT_GREEN="\033[38;5;78m"
 C_RESET="\033[0m"
