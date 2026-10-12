@@ -17,7 +17,7 @@ Custom status line for [Claude Code](https://docs.anthropic.com/en/docs/claude-c
 | `5h:9% (11m)`, `7d:4% (5d22h)` | Usage limits and time until reset; `∞` when the plan has none |
 | `fable:2%` | Separate weekly Fable limit, subscriptions only, once any of it is used |
 
-Limit blocks turn yellow above 70% and red above 90%.
+Limit blocks turn yellow above 80% and red above 90%. The context percentage turns yellow above 40%, orange above 65% and red above 80%; the bar itself stays dark gray up to 40%.
 
 ## Requirements
 

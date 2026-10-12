@@ -33,12 +33,12 @@ Claude Code runs `~/.claude/statusline.sh` (symlink → this repo), so edits in 
 - **Output**: Formatted status line with:
   - Shortened directory path (last 3 components)
   - Git branch and clean/dirty status
-  - Context window usage with progress bar (raw `.context_window.used_percentage`)
+  - Context window usage with progress bar (raw `.context_window.used_percentage`). Percentage is green ≤40%, yellow 40–65%, orange 65–80%, red >80%; the bar is dark gray up to 40% so it doesn't draw the eye, then follows the percentage colour. 40% is low on purpose: it is already 400k tokens in a 1M window
   - Prompt cache countdown right after the token count (`40k/200k ❄8m`, a bare red `❄` once expired)
   - Model name with the effort level glued on (`opus 5.5·m`): `.effort.level` from stdin as one letter — `l`/`m`/`h`/`x` for low/medium/high/xhigh, `max` spelled out; no suffix when the field is absent
   - Session cost — three cases: OpenRouter models (non-`claude-*` id) show what OpenRouter actually billed for the session's responses; Anthropic API tokens show Claude Code's `cost.total_cost_usd`; subscription/OAuth users get no cost
   - Usage limits, read from stdin (`5h:20% (3h52m) | 7d:36% (4d0h)`)
-- **Color scheme**: ANSI 256-colour indices, Tokyo Night Storm-ish, except yellow and red, which are truecolor when `$COLORTERM` is `truecolor`/`24bit` and fall back to the nearest 256-colour index otherwise: yellow `#c4a767` (`38;2;196;167;103`, fallback 179), red `#cc6666` (`38;2;204;102;102`, fallback 167). In use: 240 dark gray (separators, parent path, low usage), 8 gray (labels), 4 blue (current dir), 2 green (clean git, low context), yellow (warning), red (dirty git, high usage). `C_DARK_CYAN` (30), `C_CYAN` (81) and `C_LIGHT_GREEN` (78) are defined but currently unused.
+- **Color scheme**: ANSI 256-colour indices, Tokyo Night Storm-ish, except green, yellow, orange and red, which are truecolor when `$COLORTERM` is `truecolor`/`24bit` and fall back to the nearest 256-colour index otherwise: green `#8fae7a` (`38;2;143;174;122`, fallback 108), yellow `#c4a767` (`38;2;196;167;103`, fallback 179), orange `#c9885f` (`38;2;201;136;95`, fallback 173), red `#cc6666` (`38;2;204;102;102`, fallback 167). In use: 240 dark gray (separators, parent path, low usage), 8 gray (labels), 4 blue (current dir), green `#8fae7a` (clean git, low context percentage), yellow (warning), orange (context 65–80%), red (dirty git, high usage). `C_DARK_CYAN` (30), `C_CYAN` (81) and `C_LIGHT_GREEN` (78) are defined but currently unused.
 - **Subscription detection**: Checks OAuth token prefix (`sk-ant-oat*`) to determine subscription vs API tokens. Non-Anthropic models (OpenRouter, `model.id` not `claude-*`) are detected separately and marked with a `⤳` icon before the model name.
 - **Dependencies**: jq, git, `security` (keychain, for subscription detection only), `awk`, `curl` and `OPENROUTER_CC_KEY` (OpenRouter session cost)
 
@@ -46,7 +46,7 @@ Claude Code runs `~/.claude/statusline.sh` (symlink → this repo), so edits in 
 - **Source**: `.rate_limits.{five_hour,seven_day}.{used_percentage,resets_at}` from the stdin JSON — no API call, no cache, no token needed. `resets_at` is a unix timestamp; time left is `resets_at - $(date +%s)`.
 - **Output**: `5h:20% (3h52m) | 7d:36% (4d0h)` with ANSI colors
 - **Color thresholds**: Each block colored by utilization:
-  - ≤70%: dark gray — 70–90%: yellow — >90%: red
+  - ≤80%: dark gray — 80–90%: yellow — >90%: red
 - **Fallbacks**: `.rate_limits` absent → block omitted entirely. Present but both percentages null → `∞` (Max subscription, no limits).
 
 ### Prompt cache countdown

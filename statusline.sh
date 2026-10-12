@@ -4,10 +4,17 @@ C_DARK_CYAN="\033[38;5;30m"
 C_DARK_GRAY="\033[38;5;240m"
 C_GRAY="\033[38;5;8m"
 C_BLUE="\033[38;5;4m"
-C_GREEN="\033[38;5;2m"
+case "$COLORTERM" in
+    truecolor|24bit) C_GREEN="\033[38;2;143;174;122m" ;;  # #8fae7a
+    *) C_GREEN="\033[38;5;108m" ;;                        # nearest 256-colour
+esac
 case "$COLORTERM" in
     truecolor|24bit) C_YELLOW="\033[38;2;196;167;103m" ;;  # #c4a767
     *) C_YELLOW="\033[38;5;179m" ;;                        # nearest 256-colour
+esac
+case "$COLORTERM" in
+    truecolor|24bit) C_ORANGE="\033[38;2;201;136;95m" ;;  # #c9885f
+    *) C_ORANGE="\033[38;5;173m" ;;                       # nearest 256-colour
 esac
 case "$COLORTERM" in
     truecolor|24bit) C_RED="\033[38;2;204;102;102m" ;;  # #cc6666
@@ -30,7 +37,7 @@ if [[ -n "$STATUSLINE_DEBUG" ]]; then
 fi
 
 # All stdin fields in one jq pass — unit separator (\037) keeps empty fields intact
-IFS=$'\037' read -r current_dir current size pct MODEL MODEL_ID exceeds_200k cost \
+IFS=$'\037' read -r current_dir current size pct MODEL MODEL_ID cost \
     has_limits pct_5h reset_5h pct_7d reset_7d \
     session_id transcript_path effort <<< "$(echo "$input" | jq -r '
     [ (.workspace.current_dir // ""),
@@ -40,7 +47,6 @@ IFS=$'\037' read -r current_dir current size pct MODEL MODEL_ID exceeds_200k cos
       (.context_window.used_percentage // 0),
       (.model.display_name // ""),
       (.model.id // ""),
-      (.exceeds_200k_tokens // false),
       (.cost.total_cost_usd // 0),
       (.rate_limits != null),
       (.rate_limits.five_hour.used_percentage // ""),
@@ -112,7 +118,9 @@ fi
 # Dynamic color based on percentage
 if [ $pct -gt 80 ]; then
     pct_color="$C_RED"
-elif [ $pct -gt 60 ]; then
+elif [ $pct -gt 65 ]; then
+    pct_color="$C_ORANGE"
+elif [ $pct -gt 40 ]; then
     pct_color="$C_YELLOW"
 else
     pct_color="$C_GREEN"
@@ -152,15 +160,12 @@ empty=$((bar_width - filled))
 
 bar_filled=""; for ((i=0; i<filled; i++)); do bar_filled+='▓'; done
 bar_empty="";  for ((i=0; i<empty;  i++)); do bar_empty+='░';  done
-progress_bar="${pct_color}${bar_filled}${pct_color}${bar_empty}${C_RESET}"
+# Up to 40% the bar is dark gray so it doesn't draw the eye in normal work
+bar_color="$pct_color"
+[ $pct -le 40 ] && bar_color="$C_DARK_GRAY"
+progress_bar="${bar_color}${bar_filled}${bar_color}${bar_empty}${C_RESET}"
 
-if [ "$exceeds_200k" = "true" ]; then
-    usage_color="$C_YELLOW"
-else
-    usage_color="$C_GRAY"
-fi
-
-context_part=$(printf " ${SEPARATOR} ${C_GRAY}${model_icon}${model_part} ${pct_color}${pct}%%${C_GRAY} ${progress_bar} ${usage_color}${current_fmt}/${size_fmt}")
+context_part=$(printf " ${SEPARATOR} ${C_GRAY}${model_icon}${model_part} ${pct_color}${pct}%%${C_GRAY} ${progress_bar} ${C_GRAY}${current_fmt}/${size_fmt}")
 
 # Build status line components
 
@@ -381,7 +386,7 @@ format_usage_block() {
     local color
     if [[ $int_pct -gt 90 ]]; then
         color="$C_RED"
-    elif [[ $int_pct -gt 70 ]]; then
+    elif [[ $int_pct -gt 80 ]]; then
         color="$C_YELLOW"
     else
         color="$C_DARK_GRAY"
