@@ -354,7 +354,9 @@ format_remaining_time() {
     fi
     local hours=$((seconds / 3600))
     local mins=$(((seconds % 3600) / 60))
-    if [[ $hours -gt 0 ]]; then
+    if [[ $hours -gt 3 ]]; then
+        echo "${hours}h"
+    elif [[ $hours -gt 0 ]]; then
         echo "${hours}h${mins}m"
     else
         echo "${mins}m"
@@ -369,7 +371,9 @@ format_remaining_time_days() {
     fi
     local days=$((seconds / 86400))
     local hours=$(((seconds % 86400) / 3600))
-    if [[ $days -gt 0 ]]; then
+    if [[ $days -gt 3 ]]; then
+        echo "${days}d"
+    elif [[ $days -gt 0 ]]; then
         echo "${days}d${hours}h"
     else
         format_remaining_time "$seconds"
