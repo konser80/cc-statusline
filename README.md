@@ -10,7 +10,7 @@ Custom status line for [Claude Code](https://docs.anthropic.com/en/docs/claude-c
 |---|---|
 | `konser/js/statusline` | Last 3 components of the working directory |
 | `git:main ✓` | Branch, `✓` clean / `✗` dirty. `⇡` — branch differs from its upstream or was never pushed, `⌀` — no remote configured |
-| `opus 5.5·m` | Model and effort level: `l` / `m` / `h` / `x` for low / medium / high / xhigh, `max` spelled out. `⤳` in front marks a non-Anthropic model |
+| `opus 5.5·med` | Model and effort level: `low` / `med` / `high` / `xhigh`, other levels (`max`) as is. `⤳` in front marks a non-Anthropic model |
 | `45% ▓▓▓▓░░░░░░ 450k/1M` | Context window usage |
 | `❄8m` | Minutes until the prompt cache expires; a bare red `❄` once it has. After that the next request re-pays for the whole context. Shown for the last 10 minutes only, and only from 30k tokens of context |
 | `$0.1234` | Session cost — API tokens and OpenRouter only, hidden for Pro/Max subscriptions |

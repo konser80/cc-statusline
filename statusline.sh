@@ -136,15 +136,15 @@ model_icon=""
 [[ "$MODEL_ID" != claude-* && -n "$MODEL_ID" ]] && model_icon="⤳ "
 model_part="$(echo "${model_stripped%% (*}" | tr '[:upper:]' '[:lower:]')"
 
-# Effort — one letter glued to the model name ("opus 5.5·m"); max is rare enough
-# to spell out. The field is absent for models without effort. An unknown level
+# Effort — short name glued to the model name ("opus 5.5·med"); max is spelled
+# out as is. The field is absent for models without effort. An unknown level
 # is shown as is, but only if it is plain letters: model_part ends up in a
 # printf format string below.
 case "$effort" in
-    low)    effort_fmt="l" ;;
-    medium) effort_fmt="m" ;;
-    high)   effort_fmt="h" ;;
-    xhigh)  effort_fmt="x" ;;
+    low)    effort_fmt="low" ;;
+    medium) effort_fmt="med" ;;
+    high)   effort_fmt="high" ;;
+    xhigh)  effort_fmt="xhigh" ;;
     *)      effort_fmt="$effort" ;;
 esac
 [[ "$effort_fmt" =~ ^[a-z]+$ ]] && model_part="${model_part}·${effort_fmt}"
