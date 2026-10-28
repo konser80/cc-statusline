@@ -39,7 +39,7 @@ fi
 # All stdin fields in one jq pass — unit separator (\037) keeps empty fields intact
 IFS=$'\037' read -r current_dir current size pct MODEL MODEL_ID cost \
     has_limits pct_5h reset_5h pct_7d reset_7d \
-    session_id transcript_path effort <<< "$(echo "$input" | jq -r '
+    session_id transcript_path effort project_dir <<< "$(echo "$input" | jq -r '
     [ (.workspace.current_dir // ""),
       ((.context_window.current_usage // {})
         | (.input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0)),
@@ -55,7 +55,8 @@ IFS=$'\037' read -r current_dir current size pct MODEL MODEL_ID cost \
       (.rate_limits.seven_day.resets_at // ""),
       (.session_id // ""),
       (.transcript_path // ""),
-      (.effort.level // "")
+      (.effort.level // ""),
+      (.workspace.project_dir // .workspace.current_dir // "")
     ] | map(tostring) | join("\u001f")')"
 
 # Git information
@@ -344,6 +345,21 @@ if [[ "$MODEL_ID" == claude-* && $current -ge $CACHE_MIN_TOKENS && -f "$transcri
     fi
 fi
 
+# ── Project CLAUDE.md size ───────────────────────────────────────────
+# Bytes of <project_dir>/CLAUDE.md only (no .claude/CLAUDE.md, CLAUDE.local.md
+# or @imports). Hidden below 15 KB; dark gray, yellow from 25 KB, red from 40 KB.
+md_part=""
+if [[ -f "$project_dir/CLAUDE.md" ]]; then
+    md_bytes=$(wc -c < "$project_dir/CLAUDE.md" 2>/dev/null | tr -d ' ')
+    md_kb=$(( ${md_bytes:-0} / 1024 ))
+    if [[ $md_kb -ge 15 ]]; then
+        if [[ $md_kb -ge 40 ]]; then md_color="$C_RED"
+        elif [[ $md_kb -ge 25 ]]; then md_color="$C_YELLOW"
+        else md_color="$C_DARK_GRAY"; fi
+        md_part=" ${SEPARATOR} ${md_color}md:${md_kb}k${C_RESET}"
+    fi
+fi
+
 # ── Claude usage limits (from stdin) ─────────────────────────────────
 
 format_remaining_time() {
@@ -489,4 +505,4 @@ if [ "$has_limits" = "true" ]; then
 fi
 
 # Print complete status line
-echo -e -n "${dir_part}${git_part}${context_part}${cache_part}${cost_part}${usage_part}"
+echo -e -n "${dir_part}${git_part}${context_part}${cache_part}${md_part}${cost_part}${usage_part}"

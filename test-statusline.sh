@@ -60,5 +60,6 @@ echo "  - Directory: shortened path"
 echo "  - Git: branch and status (if in git repo)"
 echo "  - Context: model, percentage, progress bar, tokens used/limit"
 echo "  - Cache: ❄ countdown until the prompt cache expires (after the token count)"
-echo "  - Cost: session cost in USD"
+echo "  - md: project CLAUDE.md size in KB, shown from 15 KB
+  - Cost: session cost in USD"
 echo "  - Usage: 5h/7d limits from stdin, with time until reset"

@@ -13,6 +13,7 @@ Custom status line for [Claude Code](https://docs.anthropic.com/en/docs/claude-c
 | `opus 5.5·m` | Model and effort level: `l` / `m` / `h` / `x` for low / medium / high / xhigh, `max` spelled out. `⤳` in front marks a non-Anthropic model |
 | `45% ▓▓▓▓░░░░░░ 450k/1M` | Context window usage |
 | `❄8m` | Minutes until the prompt cache expires; a bare red `❄` once it has. After that the next request re-pays for the whole context. Shown for the last 10 minutes only, and only from 30k tokens of context |
+| `md:18k` | Size of the project's `CLAUDE.md` (the file at the project root only), loaded into every session. Hidden below 15 KB, dark gray from 15, yellow from 25, red from 40 |
 | `$0.1234` | Session cost — API tokens and OpenRouter only, hidden for Pro/Max subscriptions |
 | `5h:9% (11m)`, `7d:4% (5d22h)` | Usage limits and time until reset; `∞` when the plan has none |
 | `fable:2%` | Separate weekly Fable limit, subscriptions only, once any of it is used |
@@ -62,6 +63,7 @@ The symlink makes the new version live immediately. `readlink ~/.claude/statusli
 Almost everything is read from the JSON Claude Code feeds the script on stdin. The exceptions:
 
 - **Token type** — the OAuth token prefix from the macOS keychain tells a subscription (`sk-ant-oat*`) from an API token.
+- **CLAUDE.md size** — `wc -c` of `CLAUDE.md` in the project directory.
 - **Cache countdown** — the last 200 lines of the session transcript. An estimate: subagent requests have their own cache and are not counted.
 - **Fable limit** — `https://api.anthropic.com/api/oauth/usage` with the keychain OAuth token, refreshed in the background at most every 2 minutes, cached in `~/.cache/statusline-fable`.
 - **OpenRouter cost** — see below.
